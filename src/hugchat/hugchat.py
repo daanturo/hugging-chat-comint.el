@@ -1,3 +1,4 @@
+import argparse
 import json
 import uuid
 
@@ -5,12 +6,12 @@ from requests import Session
 
 
 class ChatBot:
-    def __init__(self) -> None:
+    def __init__(self, active_model=None) -> None:
         self.hf_base_url = "https://huggingface.co"
         self.json_header = {"Content-Type": "application/json"}
         self.session = self.get_hc_session()
         self.conversation_id_list = []
-        self.active_model = "OpenAssistant/oasst-sft-6-llama-30b-xor"
+        self.active_model = active_model or "OpenAssistant/oasst-sft-6-llama-30b-xor"
         self.accepted_welcome_modal = (
             False  # Only when accepted, it can create a new conversation.
         )
@@ -32,7 +33,7 @@ class ChatBot:
             "Sec-Fetch-Mode": "cors",
             "Sec-Fetch-Dest": "empty",
             "Accept-Encoding": "gzip, deflate, br",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36",
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/112.0",
         }
         if ref:
             _h[
@@ -230,13 +231,24 @@ class ChatBot:
             return res_text
 
 
-def cli():
+def cli(args: argparse.Namespace = None, hello=False):
     print("-------HuggingChat-------")
     print(
         "1. AI is an area of active research with known problems such as biased generation and misinformation. Do not use this application for high-stakes decisions or advice.\n2. Your conversations will be shared with model authors.\nContinuing to use means that you accept the above points"
     )
-    chatbot = ChatBot()
+
+    chatbot = ChatBot(active_model=(args and args.model))
     running = True
+
+    if hello:
+        print("Current model:", chatbot.active_model)
+        message_content = chatbot.chat("Hello", max_new_tokens=10)
+        print(message_content)
+        summary = chatbot.summarize_conversation()
+        print(summary)
+        sharelink = chatbot.share_conversation()
+        print(sharelink)
+
     while running:
         question = input("> ")
         if question == "/new":
@@ -281,16 +293,10 @@ def cli():
 
         else:
             res = chatbot.chat(question)
-            print("< " + res)
+            # to select easier as paragraphs
+            print("")
+            print(res, "\n")
 
 
 if __name__ == "__main__":
-    bot = ChatBot()
-    message_content = bot.chat("Hello", max_new_tokens=10)
-    print(message_content)
-    summary = bot.summarize_conversation()
-    print(summary)
-    sharelink = bot.share_conversation()
-    print(sharelink)
-
-    cli()
+    cli(hello=True)

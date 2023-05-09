@@ -1,0 +1,6 @@
+Forked from [[https://github.com/Soulter/hugging-chat-api]].
+
+Usage:
+#+begin_src lisp
+M-x hugging-chat-comint-switch-to-shell-buffer
+#+end_src
