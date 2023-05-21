@@ -1,27 +1,56 @@
-import argparse
-import json
-import uuid
-
 from requests import Session
+import json
+import os
+import uuid
+import logging
 
 
 class ChatBot:
-    def __init__(self, active_model=None) -> None:
+    
+    cookies: dict
+    """Cookies for authentication"""
+
+    session: Session
+    """HuggingChat session"""
+
+    def __init__(
+        self,
+        cookies: dict = None,
+        cookie_path: str = ""
+    ) -> None:
+        if cookies is None and cookie_path == "":
+            raise Exception("Authentication is required now, but no cookies provided")
+        elif cookies is not None and cookie_path != "":
+            raise Exception("Both cookies and cookie_path provided")
+        
+        if cookies is None and cookie_path != "":
+            # read cookies from path
+            if not os.path.exists(cookie_path):
+                raise Exception(f"Cookie file {cookie_path} not found. Note: The file must be in JSON format and must contain a list of cookies. See more at https://github.com/Soulter/hugging-chat-api")
+            with open(cookie_path, "r") as f:
+                cookies = json.load(f)
+
+        # convert cookies to KV format
+        if isinstance(cookies, list):
+            cookies = {cookie["name"]: cookie["value"] for cookie in cookies}
+
+        self.cookies = cookies
+
         self.hf_base_url = "https://huggingface.co"
         self.json_header = {"Content-Type": "application/json"}
         self.session = self.get_hc_session()
         self.conversation_id_list = []
-        self.active_model = active_model or "OpenAssistant/oasst-sft-6-llama-30b-xor"
-        self.accepted_welcome_modal = (
-            False  # Only when accepted, it can create a new conversation.
-        )
+        self.active_model = "OpenAssistant/oasst-sft-6-llama-30b-xor"
+        self.accepted_welcome_modal = False # Only when accepted, it can create a new conversation.
         self.current_conversation = self.new_conversation()
 
     def get_hc_session(self) -> Session:
         session = Session()
+        # set cookies
+        session.cookies.update(self.cookies)
         session.get(self.hf_base_url + "/chat")
         return session
-
+    
     def get_headers(self, ref=True) -> dict:
         _h = {
             "Accept": "*/*",
@@ -33,16 +62,15 @@ class ChatBot:
             "Sec-Fetch-Mode": "cors",
             "Sec-Fetch-Dest": "empty",
             "Accept-Encoding": "gzip, deflate, br",
-            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/112.0",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36",
         }
         if ref:
-            _h[
-                "Referer"
-            ] = f"https://huggingface.co/chat/conversation/{self.current_conversation}"
+            _h["Referer"] = f"https://huggingface.co/chat/conversation/{self.current_conversation}"
         return _h
-
+    
     def get_cookies(self) -> dict:
         return self.session.cookies.get_dict()
+    
 
     # NOTE: To create a copy when calling this, call it inside of list().
     #       If not, when updating or altering the values in the variable will
@@ -55,127 +83,136 @@ class ChatBot:
         return list(self.conversation_id_list)
 
     def accept_ethics_modal(self):
-        response = self.session.post(
-            self.hf_base_url + "/chat/settings",
-            headers=self.get_headers(ref=False),
-            cookies=self.get_cookies(),
-            allow_redirects=True,
-            data={
-                "ethicsModalAccepted": "true",
-                "shareConversationsWithModelAuthors": "true",
-                "ethicsModalAcceptedAt": "",
-                "activeModel": str(self.active_model),
-            },
-        )
+        '''
+        [Deprecated Method]
+        '''
+        response = self.session.post(self.hf_base_url + "/chat/settings", headers=self.get_headers(ref=False), cookies=self.get_cookies(), allow_redirects=True, data={
+            "ethicsModalAccepted": "true",
+            "shareConversationsWithModelAuthors": "true",
+            "ethicsModalAcceptedAt": "",
+            "activeModel": str(self.active_model)
+        })
 
         if response.status_code != 200:
-            raise Exception(
-                f"Failed to accept ethics modal with status code {response.status_code}. {response.content.decode()}"
-            )
-
+            raise Exception(f"Failed to accept ethics modal with status code {response.status_code}. {response.content.decode()}")
+        
         return True
-
+    
     def new_conversation(self) -> str:
+        '''
+        Create a new conversation. Return the new conversation id. You should change the conversation by calling change_conversation() after calling this method.
+        '''
         err_count = 0
 
         # Accept the welcome modal when init.
-        if not self.accepted_welcome_modal:
-            self.accept_ethics_modal()
+        # 17/5/2023: This is not required anymore.
+        # if not self.accepted_welcome_modal:
+        #     self.accept_ethics_modal()
 
         # Create new conversation and get a conversation id.
         resp = ""
         while True:
             try:
-                resp = self.session.post(
-                    self.hf_base_url + "/chat/conversation",
-                    json={"model": self.active_model},
-                    headers=self.json_header,
-                )
+                resp = self.session.post(self.hf_base_url + "/chat/conversation", json={"model": self.active_model}, headers=self.json_header)
                 # print(resp.text)
-                cid = json.loads(resp.text)["conversationId"]
+                logging.debug(resp.text)
+                cid = json.loads(resp.text)['conversationId']
                 self.conversation_id_list.append(cid)
                 return cid
-
+            
             except BaseException as e:
                 err_count += 1
-                print(
-                    f"[Error] Failed to create new conversation. Retrying... ({err_count})"
-                )
+                logging.debug(f" Failed to create new conversation. Retrying... ({err_count})")
                 if err_count > 5:
                     raise e
                 continue
-
+    
     def change_conversation(self, conversation_id: str) -> bool:
+        '''
+        Change the current conversation to another one. Need a valid conversation id.
+        '''
         if conversation_id not in self.conversation_id_list:
-            raise Exception(
-                "Invalid conversation id. Please check conversation id list."
-            )
+            raise Exception("Invalid conversation id. Please check conversation id list.")
         self.current_conversation = conversation_id
         return True
-
+    
+        
     def summarize_conversation(self, conversation_id: str = None) -> str:
+        '''
+        Return a summary of the conversation.
+        '''
         if conversation_id is None:
             conversation_id = self.current_conversation
-
+        
         headers = self.get_headers()
 
-        r = self.session.post(
-            f"{self.hf_base_url}/chat/conversation/{conversation_id}/summarize",
-            headers=headers,
-            cookies=self.get_cookies(),
-        )
-
+        r = self.session.post(f"{self.hf_base_url}/chat/conversation/{conversation_id}/summarize", headers=headers, cookies=self.get_cookies())
+        
         if r.status_code != 200:
-            raise Exception(
-                f"Failed to send chat message with status code: {r.status_code}"
-            )
-
+            raise Exception(f"Failed to send chat message with status code: {r.status_code}")
+        
         response = r.json()
-        if "title" in response:
-            return response["title"]
+        if 'title' in response:
+            return response['title']
 
         raise Exception(f"Unknown server response: {response}")
-
+    
     def share_conversation(self, conversation_id: str = None) -> str:
+        '''
+        Return a share link of the conversation.
+        '''
         if conversation_id is None:
             conversation_id = self.current_conversation
 
         headers = self.get_headers()
-
-        r = self.session.post(
-            f"{self.hf_base_url}/chat/conversation/{conversation_id}/share",
-            headers=headers,
-            cookies=self.get_cookies(),
-        )
-
+        
+        r = self.session.post(f"{self.hf_base_url}/chat/conversation/{conversation_id}/share", headers=headers, cookies=self.get_cookies())
+        
         if r.status_code != 200:
-            raise Exception(
-                f"Failed to send chat message with status code: {r.status_code}"
-            )
-
+            raise Exception(f"Failed to send chat message with status code: {r.status_code}")
+        
         response = r.json()
-        if "url" in response:
-            return response["url"]
+        if 'url' in response:
+            return response['url']
 
         raise Exception(f"Unknown server response: {response}")
+
+    def delete_conversation(self, conversation_id: str = None) -> bool:
+        '''
+        Delete a HuggingChat conversation by conversation_id.
+        '''
+
+        if conversation_id is None:
+            raise Exception("conversation_id is required.")
+
+        headers = self.get_headers()
+
+        r = self.session.delete(f"{self.hf_base_url}/chat/conversation/{conversation_id}", headers=headers, cookies=self.get_cookies())
+
+        if r.status_code != 200:
+            raise Exception(f"Failed to delete conversation with status code: {r.status_code}")
+        
 
     def chat(
         self,
         text: str,
-        temperature: float = 0.9,
-        top_p: float = 0.95,
-        repetition_penalty: float = 1.2,
-        top_k: int = 50,
-        truncate: int = 1024,
-        watermark: bool = False,
-        max_new_tokens: int = 1024,
-        stop: list = ["</s>"],
-        return_full_text: bool = False,
-        stream: bool = True,
-        use_cache: bool = False,
-        is_retry: bool = False,
-        retry_count: int = 5,
+        temperature: float=0.9,
+        top_p: float=0.95,
+        repetition_penalty: float=1.2,
+        top_k: int=50,
+        truncate: int=1024,
+        watermark: bool=False,
+        max_new_tokens: int=1024,
+        stop: list=["</s>"],
+        return_full_text: bool=False,
+        stream: bool=True,
+        use_cache: bool=False,
+        is_retry: bool=False,
+        retry_count: int=5,
     ):
+        '''
+        Send a message to the current conversation. Return the response text.
+        '''
         if retry_count <= 0:
             raise Exception("the parameter retry_count must be greater than 0.")
         if self.current_conversation == "":
@@ -195,9 +232,9 @@ class ChatBot:
                 "stream": stream,
             },
             "options": {
-                "use_cache": use_cache,
-                "is_retry": is_retry,
-                "id": str(uuid.uuid4()),
+                    "use_cache": use_cache,
+                    "is_retry": is_retry,
+                    "id": str(uuid.uuid4()),
             },
         }
         # print(req_json)
@@ -206,13 +243,7 @@ class ChatBot:
         headers = self.get_headers(ref=True)
 
         while retry_count > 0:
-            resp = self.session.post(
-                self.hf_base_url + f"/chat/conversation/{self.current_conversation}",
-                json=req_json,
-                stream=True,
-                headers=headers,
-                cookies=self.session.cookies.get_dict(),
-            )
+            resp = self.session.post(self.hf_base_url + f"/chat/conversation/{self.current_conversation}", json=req_json, stream=True, headers=headers, cookies=self.session.cookies.get_dict())
             res_text = ""
 
             if resp.status_code != 200:
@@ -230,25 +261,12 @@ class ChatBot:
                         raise Exception(obj["error"])
             return res_text
 
-
-def cli(args: argparse.Namespace = None, hello=False):
+def cli():
     print("-------HuggingChat-------")
-    print(
-        "1. AI is an area of active research with known problems such as biased generation and misinformation. Do not use this application for high-stakes decisions or advice.\n2. Your conversations will be shared with model authors.\nContinuing to use means that you accept the above points"
-    )
-
-    chatbot = ChatBot(active_model=(args and args.model))
+    print("Official Site: https://huggingface.co/chat")
+    print("1. AI is an area of active research with known problems such as biased generation and misinformation. Do not use this application for high-stakes decisions or advice.\n2. Your conversations will be shared with model authors.\nContinuing to use means that you accept the above points")
+    chatbot = ChatBot(cookie_path="cookies.json")
     running = True
-
-    if hello:
-        print("Current model:", chatbot.active_model)
-        message_content = chatbot.chat("Hello", max_new_tokens=10)
-        print(message_content)
-        summary = chatbot.summarize_conversation()
-        print(summary)
-        sharelink = chatbot.share_conversation()
-        print(sharelink)
-
     while running:
         question = input("> ")
         if question == "/new":
@@ -257,13 +275,11 @@ def cli(args: argparse.Namespace = None, hello=False):
             chatbot.change_conversation(cid)
             print("Conversation changed successfully.")
             continue
-
+        
         elif question.startswith("/switch"):
             try:
                 conversations = chatbot.get_conversation_list()
-                conversation_id = str(
-                    question.split(" ")[1] if len(question.split(" ")) > 1 else ""
-                )
+                conversation_id = str(question.split(" ")[1] if len(question.split(" ")) > 1 else "")
                 if conversation_id not in conversations:
                     print("# Please enter a valid ID number.")
                     print(f"# Sessions include: {conversations}")
@@ -272,31 +288,34 @@ def cli(args: argparse.Namespace = None, hello=False):
                     print(f"# Conversation switched successfully to {conversation_id}")
             except ValueError:
                 print("# Please enter a valid ID number\n")
-
+            
+            
+        
         elif question == "/ids":
             id_list = list(chatbot.get_conversation_list())
-            [
-                print(
-                    f"{id_list.index(i)+1} : {i}{' <active>' if chatbot.current_conversation == i else ''}"
-                )
-                for i in id_list
-            ]
-
-        elif question in ["/exit", "/quit", "/close"]:
+            [print(f"{id_list.index(i)+1} : {i}{' <active>' if chatbot.current_conversation == i else ''}") for i in id_list]
+        
+        elif question in ["/exit", "/quit","/close"]:
             running = False
-
+        
         elif question.startswith("/"):
             print("# Invalid command")
-
+        
         elif question == "":
             pass
 
         else:
             res = chatbot.chat(question)
-            # to select easier as paragraphs
-            print("")
-            print(res, "\n")
-
+            print(res)
+    
 
 if __name__ == "__main__":
-    cli(hello=True)
+    bot = ChatBot()
+    message_content = bot.chat("Hello", max_new_tokens=10)
+    print(message_content)
+    summary = bot.summarize_conversation()
+    print(summary)
+    sharelink = bot.share_conversation()
+    print(sharelink)
+
+    cli()
